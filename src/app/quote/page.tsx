@@ -5,11 +5,17 @@ import WalletConnect from '@/components/WalletConnect';
 const networks = ["Base", "Lisk", "Celo"];
 const tokens = ["USDC", "USDT"];
 
+interface Quote {
+  rate: number;
+  fee: number;
+  total: number;
+}
+
 export default function QuotePage() {
   const [network, setNetwork] = useState(networks[0]);
   const [token, setToken] = useState(tokens[0]);
   const [amount, setAmount] = useState("");
-  const [quote, setQuote] = useState(null);
+  const [quote, setQuote] = useState<Quote | null>(null);
   const [loading, setLoading] = useState(false);
 
   const getQuote = async () => {

@@ -1,6 +1,6 @@
 "use client"
 
-import React, { type ReactNode } from "react";
+import React, { type ReactNode, useEffect } from "react";
 import { CryptoProvider } from "swypt-checkout";
 import "./globals.css";
 import Script from 'next/script';
@@ -17,6 +17,21 @@ export default function RootLayout({
 }: {
   children: ReactNode;
 }) {
+  useEffect(() => {
+    // Initialize SwyptCheckout when the script is loaded
+    const initializeSwypt = () => {
+      if (typeof window !== 'undefined' && window.SwyptCheckout) {
+        window.SwyptCheckoutLoaded = true;
+        console.log('SwyptCheckout initialized successfully');
+      }
+    };
+
+    // Check if SwyptCheckout is already loaded
+    if (window.SwyptCheckout) {
+      initializeSwypt();
+    }
+  }, []);
+
   return (
     <CryptoProvider>
       <html lang="en">
@@ -26,12 +41,15 @@ export default function RootLayout({
             strategy="beforeInteractive"
             onLoad={() => {
               console.log('SwyptCheckout script loaded successfully');
-              // Set a global flag to indicate script is loaded
-              window.SwyptCheckoutLoaded = true;
+              if (typeof window !== 'undefined') {
+                window.SwyptCheckoutLoaded = true;
+              }
             }}
             onError={(e) => {
               console.error('Error loading SwyptCheckout script:', e);
-              window.SwyptCheckoutLoaded = false;
+              if (typeof window !== 'undefined') {
+                window.SwyptCheckoutLoaded = false;
+              }
             }}
           />
         </head>

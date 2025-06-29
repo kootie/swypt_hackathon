@@ -25,12 +25,14 @@ export default function PaymentPage() {
   const [isOpen, setIsOpen] = useState(false);
   const [amount, setAmount] = useState("");
   const [mpesaPhone, setMpesaPhone] = useState("");
-  const [paymentType, setPaymentType] = useState("mpesa");
+  const [tokenType, setTokenType] = useState("USDT");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckoutReady, setIsCheckoutReady] = useState(false);
+  const [initAttempts, setInitAttempts] = useState(0);
+  const MAX_INIT_ATTEMPTS = 5;
 
   // Initialize SwyptCheckout
   useEffect(() => {
@@ -46,7 +48,13 @@ export default function PaymentPage() {
                 clearInterval(checkInterval);
                 resolve(true);
               }
-            }, 100);
+            }, 1000); // Check every second
+
+            // Set a timeout to prevent infinite waiting
+            setTimeout(() => {
+              clearInterval(checkInterval);
+              resolve(false);
+            }, 10000); // 10 second timeout
           }
         });
 
@@ -59,12 +67,17 @@ export default function PaymentPage() {
         }
       } catch (err) {
         console.error('Error initializing SwyptCheckout:', err);
-        setError("Failed to initialize payment system. Please refresh the page and try again.");
+        if (initAttempts < MAX_INIT_ATTEMPTS) {
+          setInitAttempts(prev => prev + 1);
+          setTimeout(initCheckout, 2000); // Retry after 2 seconds
+        } else {
+          setError("Failed to initialize payment system. Please refresh the page and try again.");
+        }
       }
     };
 
     initCheckout();
-  }, []);
+  }, [initAttempts]);
 
   // Load transactions on component mount
   useEffect(() => {
@@ -96,7 +109,7 @@ export default function PaymentPage() {
         },
         body: JSON.stringify({
           amount: parseFloat(amount),
-          paymentType,
+          tokenType,
           mpesaPhone,
           paymentData,
         }),
@@ -146,6 +159,11 @@ export default function PaymentPage() {
                 <p className="text-sm text-red-600">{error}</p>
               </div>
             )}
+            {initAttempts > 0 && (
+              <p className="mt-2 text-sm text-gray-500">
+                Attempt {initAttempts} of {MAX_INIT_ATTEMPTS}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -162,7 +180,7 @@ export default function PaymentPage() {
             <form onSubmit={handleSubmit} className="space-y-6">
               <div>
                 <label htmlFor="amount" className="block text-sm font-medium text-gray-700">
-                  Amount (KES)
+                  Amount
                 </label>
                 <input
                   type="number"
@@ -176,18 +194,18 @@ export default function PaymentPage() {
               </div>
 
               <div>
-                <label htmlFor="paymentType" className="block text-sm font-medium text-gray-700">
-                  Payment Method
+                <label htmlFor="tokenType" className="block text-sm font-medium text-gray-700">
+                  Token Type
                 </label>
                 <select
-                  id="paymentType"
-                  value={paymentType}
-                  onChange={(e) => setPaymentType(e.target.value)}
+                  id="tokenType"
+                  value={tokenType}
+                  onChange={(e) => setTokenType(e.target.value)}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                 >
-                  <option value="mpesa">M-PESA</option>
-                  <option value="card">Card Payment</option>
-                  <option value="bank">Bank Transfer</option>
+                  <option value="USDT">Tether (USDT)</option>
+                  <option value="USDC">USD Coin (USDC)</option>
+                  <option value="CELO">Celo Dollar (CELO)</option>
                 </select>
               </div>
 
@@ -238,7 +256,7 @@ export default function PaymentPage() {
                     <div className="flex justify-between items-center">
                       <div>
                         <p className="text-sm font-medium text-gray-900">
-                          {transaction.type === "deposit" ? "Deposit" : "Withdrawal"}
+                          {transaction.type}
                         </p>
                         <p className="text-sm text-gray-500">
                           {new Date(transaction.createdAt).toLocaleString()}
@@ -246,7 +264,7 @@ export default function PaymentPage() {
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-medium text-gray-900">
-                          KES {transaction.amount.toFixed(2)}
+                          {transaction.amount.toFixed(2)} {transaction.type}
                         </p>
                         <p
                           className={`text-sm ${
@@ -270,25 +288,27 @@ export default function PaymentPage() {
       </div>
 
       {/* Modal Container */}
-      <div className={`fixed inset-0 z-50 overflow-y-auto ${isOpen ? 'block' : 'hidden'}`}>
-        {/* Backdrop */}
-        <div className="fixed inset-0 bg-black bg-opacity-50 transition-opacity" onClick={() => setIsOpen(false)} />
+      {isOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          {/* Backdrop */}
+          <div className="fixed inset-0 bg-black bg-opacity-50 transition-opacity" onClick={() => setIsOpen(false)} />
 
-        {/* Modal Content */}
-        <div className="flex min-h-full items-center justify-center p-4 text-center">
-          <div className="relative transform overflow-hidden rounded-lg bg-white text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg">
-            <DepositModal
-              isOpen={isOpen}
-              onClose={() => setIsOpen(false)}
-              headerBackgroundColor="linear-gradient(to right, #044639, #044639, #FF4040)"
-              businessName="Swypt Demo"
-              merchantName="Demo Merchant"
-              merchantAddress="0x6d19a24D93379D1bA58d28884fFBBEf1bc145387"
-              amount={parseFloat(amount)}
-            />
+          {/* Modal Content */}
+          <div className="flex min-h-full items-center justify-center p-4 text-center">
+            <div className="relative transform overflow-hidden rounded-lg bg-white text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg">
+              <DepositModal
+                isOpen={isOpen}
+                onClose={() => setIsOpen(false)}
+                headerBackgroundColor="linear-gradient(to right, #044639, #044639, #FF4040)"
+                businessName="Swypt Demo"
+                merchantName="Demo Merchant"
+                merchantAddress="0x6d19a24D93379D1bA58d28884fFBBEf1bc145387"
+                amount={parseFloat(amount)}
+              />
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 } 

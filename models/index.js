@@ -14,7 +14,12 @@ const Transaction = sequelize.define('Transaction', {
         primaryKey: true,
         autoIncrement: true
     },
-    liskAmount: {
+    orderID: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        unique: true
+    },
+    tokenAmount: {
         type: DataTypes.STRING,
         allowNull: false
     },
@@ -22,11 +27,23 @@ const Transaction = sequelize.define('Transaction', {
         type: DataTypes.STRING,
         allowNull: false
     },
-    paymentType: {
-        type: DataTypes.ENUM('LSK', 'USDT', 'USDC', 'CELO'),
-        defaultValue: 'LSK'
+    tokenType: {
+        type: DataTypes.ENUM('USDT', 'USDC', 'CELO'),
+        defaultValue: 'USDT'
     },
-    liskTransactionId: {
+    transferType: {
+        type: DataTypes.ENUM('onramp', 'offramp'),
+        allowNull: true
+    },
+    walletAddress: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    network: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    tokenTransactionId: {
         type: DataTypes.STRING,
         allowNull: true
     },
@@ -35,7 +52,7 @@ const Transaction = sequelize.define('Transaction', {
         allowNull: true
     },
     status: {
-        type: DataTypes.ENUM('pending', 'completed', 'failed'),
+        type: DataTypes.ENUM('pending', 'stk_initiated', 'tokens_sent', 'completed', 'failed'),
         defaultValue: 'pending'
     },
     error: {
@@ -44,14 +61,14 @@ const Transaction = sequelize.define('Transaction', {
     }
 });
 
-// Define User model (for storing Lisk addresses)
+// Define User model (for storing wallet addresses)
 const User = sequelize.define('User', {
     id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
         autoIncrement: true
     },
-    liskAddress: {
+    walletAddress: {
         type: DataTypes.STRING,
         allowNull: false,
         unique: true

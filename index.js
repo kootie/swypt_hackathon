@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const { cryptography, apiClient } = require('@liskhq/lisk-client');
+const { ethers } = require('ethers');
 const axios = require('axios');
 const { Transaction, User, initDatabase } = require('./models');
 const { sequelize } = require('./models');
@@ -9,146 +9,223 @@ const app = express();
 app.use(express.json());
 app.use('/node_modules', express.static('node_modules'));
 
-let client; // Will hold the Lisk WS client
-
-// Configure Lisk client with correct network settings
-const liskConfig = {
-    network: {
-        name: 'Lisk',
-        chainID: '1135',
-        rpcEndpoint: 'https://rpc.api.lisk.com'
+// Configure token contracts for the three initial launch chains
+const tokenConfigs = {
+    'USDT': {
+        'base': {
+            contractAddress: process.env.BASE_USDT_CONTRACT_ADDRESS || '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb',
+            networkUrl: process.env.BASE_NETWORK_URL || 'https://mainnet.base.org',
+            decimals: 6
+        },
+        'lisk': {
+            contractAddress: process.env.LISK_USDT_CONTRACT_ADDRESS || '0x4f96fe3b7a6cf9725f59d353f723c1bdb64ca6aa',
+            networkUrl: process.env.LISK_NETWORK_URL || 'https://lisk.com/api',
+            decimals: 6
+        },
+        'celo': {
+            contractAddress: process.env.CELO_USDT_CONTRACT_ADDRESS || '0x88eeC49252c8cbc039DCdB394c0c2BA2f1637EA0',
+            networkUrl: process.env.CELO_NETWORK_URL || 'https://forno.celo.org',
+            decimals: 6
+        }
+    },
+    'USDC': {
+        'base': {
+            contractAddress: process.env.BASE_USDC_CONTRACT_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+            networkUrl: process.env.BASE_NETWORK_URL || 'https://mainnet.base.org',
+            decimals: 6
+        },
+        'lisk': {
+            contractAddress: process.env.LISK_USDC_CONTRACT_ADDRESS || '0x07865c6e87b9f70255377e024ace6630c1eaa37f',
+            networkUrl: process.env.LISK_NETWORK_URL || 'https://lisk.com/api',
+            decimals: 6
+        },
+        'celo': {
+            contractAddress: process.env.CELO_USDC_CONTRACT_ADDRESS || '0x765DE816845861e75A25fCA122bb6898B8B1282a',
+            networkUrl: process.env.CELO_NETWORK_URL || 'https://forno.celo.org',
+            decimals: 6
+        }
     }
 };
 
-// Function to send Lisk tokens
-async function sendLiskTokens(recipientAddress, amount) {
-    try {
-        const transaction = {
-            moduleID: 2,
-            assetID: 0,
-            fee: BigInt(1000000),
-            asset: {
-                amount: BigInt(amount),
-                recipientAddress: cryptography.getAddressFromLisk32Address(recipientAddress),
-                data: 'Transfer to M-Pesa'
-            }
-        };
+// Swypt API configuration
+const SWYPT_API_BASE = process.env.SWYPT_API_URL || 'https://pool.swypt.io/api';
+const SWYPT_API_KEY = process.env.SWYPT_API_KEY;
+const SWYPT_API_SECRET = process.env.SWYPT_API_SECRET;
 
-        // Create and sign transaction
-        const response = await axios.post(`${liskConfig.network.rpcEndpoint}/api/v3/transactions`, {
-            transaction: transaction
+// Function to get wallet private key for specific network
+function getWalletPrivateKey(network) {
+    switch (network) {
+        case 'base':
+            return process.env.BASE_WALLET_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY;
+        case 'lisk':
+            return process.env.LISK_WALLET_PRIVATE_KEY;
+        case 'celo':
+            return process.env.CELO_WALLET_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY;
+        default:
+            return process.env.WALLET_PRIVATE_KEY;
+    }
+}
+
+// Function to get Swypt recipient address for specific network
+function getSwyptRecipientAddress(network) {
+    switch (network) {
+        case 'base':
+            return process.env.SWYPT_BASE_RECIPIENT_ADDRESS || process.env.RECIPIENT_ADDRESS;
+        case 'lisk':
+            return process.env.SWYPT_LISK_RECIPIENT_ADDRESS;
+        case 'celo':
+            return process.env.SWYPT_CELO_RECIPIENT_ADDRESS || process.env.RECIPIENT_ADDRESS;
+        default:
+            return process.env.RECIPIENT_ADDRESS;
+    }
+}
+
+// Function to get quote from Swypt API
+async function getSwyptQuote(type, amount, fiatCurrency, cryptoCurrency, network) {
+    try {
+        const response = await axios.post(`${SWYPT_API_BASE}/swypt-quotes`, {
+            type: type, // 'onramp' or 'offramp'
+            amount: amount.toString(),
+            fiatCurrency: fiatCurrency,
+            cryptoCurrency: cryptoCurrency,
+            network: network
         }, {
             headers: {
+                'x-api-key': SWYPT_API_KEY,
+                'x-api-secret': SWYPT_API_SECRET,
                 'Content-Type': 'application/json'
             }
         });
-
+        
         return response.data;
     } catch (error) {
-        console.error('Error sending Lisk tokens:', error);
+        console.error('Error getting Swypt quote:', error.response?.data || error.message);
         throw error;
     }
 }
 
-// Function to send to M-Pesa via Swypt
-async function sendToMpesa(amount, phoneNumber) {
+// Function to initiate STK push for onramp (M-Pesa to Crypto)
+async function initiateSTKPush(amount, phoneNumber, orderID) {
     try {
-        const response = await axios.post(
-            `${process.env.SWYPT_API_URL}/mpesa/transfer`,
-            {
-                amount,
-                phoneNumber,
-                currency: 'KES'
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${process.env.SWYPT_API_KEY}`,
-                    'Content-Type': 'application/json'
-                }
+        const response = await axios.post(`${SWYPT_API_BASE}/swypt-stk-push`, {
+            amount: amount.toString(),
+            phoneNumber: phoneNumber,
+            orderID: orderID
+        }, {
+            headers: {
+                'x-api-key': SWYPT_API_KEY,
+                'x-api-secret': SWYPT_API_SECRET,
+                'Content-Type': 'application/json'
             }
-        );
+        });
+        
         return response.data;
     } catch (error) {
-        console.error('Error sending to M-Pesa:', error);
+        console.error('Error initiating STK push:', error.response?.data || error.message);
         throw error;
     }
 }
 
-// Function to send stable coins
-async function sendStableCoinTokens(tokenType, recipientAddress, amount) {
+// Function to check deposit status
+async function checkDepositStatus(orderID) {
     try {
-        // Configure token contracts based on type
-        const tokenConfigs = {
-            'USDT': {
-                contractAddress: process.env.USDT_CONTRACT_ADDRESS,
-                decimals: 6
-            },
-            'USDC': {
-                contractAddress: process.env.USDC_CONTRACT_ADDRESS,
-                decimals: 6
-            },
-            'CELO': {
-                contractAddress: process.env.CELO_CONTRACT_ADDRESS,
-                decimals: 18
+        const response = await axios.get(`${SWYPT_API_BASE}/swypt-deposit-status/${orderID}`, {
+            headers: {
+                'x-api-key': SWYPT_API_KEY,
+                'x-api-secret': SWYPT_API_SECRET
             }
-        };
+        });
+        
+        return response.data;
+    } catch (error) {
+        console.error('Error checking deposit status:', error.response?.data || error.message);
+        throw error;
+    }
+}
 
-        const config = tokenConfigs[tokenType];
-        if (!config) {
+// Function to process crypto transfer to user (for onramp)
+async function processCryptoTransfer(chain, address, orderID, project) {
+    try {
+        const response = await axios.post(`${SWYPT_API_BASE}/swypt-deposit`, {
+            chain: chain,
+            address: address,
+            orderID: orderID,
+            project: project
+        }, {
+            headers: {
+                'x-api-key': SWYPT_API_KEY,
+                'x-api-secret': SWYPT_API_SECRET,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        return response.data;
+    } catch (error) {
+        console.error('Error processing crypto transfer:', error.response?.data || error.message);
+        throw error;
+    }
+}
+
+// Function to send stablecoin tokens (for offramp - Crypto to M-Pesa)
+async function sendStableCoinTokens(tokenType, recipientAddress, amount, network = 'base') {
+    try {
+        const tokenConfig = tokenConfigs[tokenType];
+        if (!tokenConfig) {
             throw new Error(`Unsupported token type: ${tokenType}`);
         }
 
-        // Create token transfer transaction
-        const transaction = {
-            to: config.contractAddress,
-            data: {
-                method: 'transfer',
-                params: {
-                    to: recipientAddress,
-                    value: BigInt(amount * Math.pow(10, config.decimals))
-                }
-            }
+        const networkConfig = tokenConfig[network];
+        if (!networkConfig) {
+            throw new Error(`Unsupported network: ${network} for token: ${tokenType}`);
+        }
+
+        const provider = new ethers.providers.JsonRpcProvider(networkConfig.networkUrl);
+        const wallet = new ethers.Wallet(getWalletPrivateKey(network), provider);
+        
+        const abi = [
+            "function transfer(address to, uint256 amount) returns (bool)",
+            "function balanceOf(address account) view returns (uint256)"
+        ];
+        
+        const contract = new ethers.Contract(networkConfig.contractAddress, abi, wallet);
+
+        const amountInWei = ethers.utils.parseUnits(amount.toString(), networkConfig.decimals);
+        const tx = await contract.transfer(recipientAddress, amountInWei);
+        const receipt = await tx.wait();
+
+        return {
+            id: receipt.transactionHash,
+            status: receipt.status === 1 ? 'completed' : 'failed'
         };
-
-        // Send transaction to the appropriate network
-        const response = await axios.post(
-            `${process.env.TOKEN_NETWORK_URL}/api/v1/transactions`,
-            {
-                transaction: transaction
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${process.env.TOKEN_NETWORK_API_KEY}`
-                }
-            }
-        );
-
-        return response.data;
     } catch (error) {
-        console.error(`Error sending ${tokenType}:`, error);
+        console.error(`Error sending ${tokenType} on ${network}:`, error);
         throw error;
     }
+}
+
+// Generate unique order ID
+function generateOrderID() {
+    return 'D-' + Math.random().toString(36).substr(2, 6).toUpperCase() + '-' + Math.random().toString(36).substr(2, 2).toUpperCase();
 }
 
 // API endpoint to register a user
 app.post('/register', async (req, res) => {
     try {
-        const { liskAddress, mpesaPhoneNumber } = req.body;
+        const { walletAddress, mpesaPhoneNumber } = req.body;
 
         // Validate required fields
-        if (!liskAddress || !mpesaPhoneNumber) {
+        if (!walletAddress || !mpesaPhoneNumber) {
             return res.status(400).json({
                 success: false,
-                error: 'Both Lisk address and M-Pesa phone number are required'
+                error: 'Both wallet address and M-Pesa phone number are required'
             });
         }
 
-        // Validate Lisk address format (basic validation)
-        if (!liskAddress.match(/^lsk[a-zA-Z0-9]{38}$/)) {
+        // Validate wallet address format
+        if (!ethers.utils.isAddress(walletAddress)) {
             return res.status(400).json({
                 success: false,
-                error: 'Invalid Lisk address format'
+                error: 'Invalid wallet address format'
             });
         }
 
@@ -160,11 +237,11 @@ app.post('/register', async (req, res) => {
             });
         }
 
-        // Check for existing user with same Lisk address or M-Pesa number
+        // Check for existing user with same wallet address or M-Pesa number
         const existingUser = await User.findOne({
             where: {
                 [sequelize.Op.or]: [
-                    { liskAddress },
+                    { walletAddress },
                     { mpesaPhoneNumber }
                 ]
             }
@@ -173,12 +250,12 @@ app.post('/register', async (req, res) => {
         if (existingUser) {
             return res.status(400).json({
                 success: false,
-                error: 'A user with this Lisk address or M-Pesa number already exists'
+                error: 'A user with this wallet address or M-Pesa number already exists'
             });
         }
 
         // Create new user
-        const user = await User.create({ liskAddress, mpesaPhoneNumber });
+        const user = await User.create({ walletAddress, mpesaPhoneNumber });
         console.log('User registered successfully:', user.toJSON());
         
         res.json({ success: true, user });
@@ -209,39 +286,30 @@ app.get('/transactions', async (req, res) => {
 // API endpoint to initiate transfer
 app.post('/transfer', async (req, res) => {
     try {
-        const { liskAmount, mpesaPhoneNumber, paymentType } = req.body;
+        const { tokenAmount, mpesaPhoneNumber, tokenType } = req.body;
 
         // Create transaction record
         const transaction = await Transaction.create({
-            liskAmount,
+            tokenAmount,
             mpesaPhoneNumber,
-            paymentType,
+            tokenType,
             status: 'pending'
         });
 
         try {
-            // First send tokens based on payment type
-            let tokenResult;
-            switch(paymentType) {
-                case 'LSK':
-                    tokenResult = await sendLiskTokens(process.env.LISK_RECIPIENT_ADDRESS, liskAmount);
-                    break;
-                case 'USDT':
-                case 'USDC':
-                case 'CELO':
-                    // Implement other token transfers here
-                    tokenResult = await sendStableCoinTokens(paymentType, process.env.RECIPIENT_ADDRESS, liskAmount);
-                    break;
-                default:
-                    throw new Error('Invalid payment type');
-            }
+            // First send stablecoin tokens
+            const tokenResult = await sendStableCoinTokens(
+                tokenType,
+                getSwyptRecipientAddress(tokenType.split('://')[0]),
+                tokenAmount
+            );
             
             // Then send to M-Pesa
-            const mpesaResult = await sendToMpesa(liskAmount, mpesaPhoneNumber);
+            const mpesaResult = await sendToMpesa(tokenAmount, mpesaPhoneNumber);
 
             // Update transaction record
             await transaction.update({
-                liskTransactionId: tokenResult.id,
+                tokenTransactionId: tokenResult.id,
                 mpesaTransactionId: mpesaResult.id,
                 status: 'completed'
             });
@@ -267,16 +335,332 @@ app.post('/transfer', async (req, res) => {
     }
 });
 
+// API endpoint to get quote for transfer
+app.post('/api/quote', async (req, res) => {
+    try {
+        const { type, amount, fiatCurrency, cryptoCurrency, network } = req.body;
+        
+        // Validate required fields
+        if (!type || !amount || !fiatCurrency || !cryptoCurrency || !network) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: type, amount, fiatCurrency, cryptoCurrency, network'
+            });
+        }
+
+        // Validate type
+        if (!['onramp', 'offramp'].includes(type)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Type must be either "onramp" or "offramp"'
+            });
+        }
+
+        const quote = await getSwyptQuote(type, amount, fiatCurrency, cryptoCurrency, network);
+        
+        res.json({
+            success: true,
+            quote: quote.data
+        });
+    } catch (error) {
+        console.error('Quote error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.response?.data?.message || error.message
+        });
+    }
+});
+
+// API endpoint for onramp (M-Pesa to Crypto)
+app.post('/api/onramp', async (req, res) => {
+    try {
+        const { amount, phoneNumber, cryptoCurrency, network, walletAddress } = req.body;
+        
+        // Validate required fields
+        if (!amount || !phoneNumber || !cryptoCurrency || !network || !walletAddress) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: amount, phoneNumber, cryptoCurrency, network, walletAddress'
+            });
+        }
+
+        // Validate phone number format
+        if (!phoneNumber.match(/^254[0-9]{9}$/)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid M-Pesa phone number format. Must start with 254 followed by 9 digits'
+            });
+        }
+
+        // Validate wallet address
+        if (!ethers.utils.isAddress(walletAddress)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid wallet address format'
+            });
+        }
+
+        // Generate order ID
+        const orderID = generateOrderID();
+
+        // Create transaction record
+        const transaction = await Transaction.create({
+            tokenAmount: amount,
+            mpesaPhoneNumber: phoneNumber,
+            tokenType: cryptoCurrency,
+            status: 'pending',
+            orderID: orderID,
+            transferType: 'onramp',
+            walletAddress: walletAddress,
+            network: network
+        });
+
+        try {
+            // Initiate STK push
+            const stkResult = await initiateSTKPush(amount, phoneNumber, orderID);
+            
+            // Update transaction with STK result
+            await transaction.update({
+                mpesaTransactionId: stkResult.data?.mpesaReceipt || stkResult.id,
+                status: 'stk_initiated'
+            });
+
+            res.json({
+                success: true,
+                orderID: orderID,
+                transaction: transaction,
+                stkResult: stkResult
+            });
+        } catch (error) {
+            // Update transaction with error
+            await transaction.update({
+                status: 'failed',
+                error: error.message
+            });
+            throw error;
+        }
+    } catch (error) {
+        console.error('Onramp error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.response?.data?.message || error.message
+        });
+    }
+});
+
+// API endpoint to check onramp status
+app.get('/api/onramp/status/:orderID', async (req, res) => {
+    try {
+        const { orderID } = req.params;
+        
+        // Check deposit status
+        const statusResult = await checkDepositStatus(orderID);
+        
+        // Get transaction from database
+        const transaction = await Transaction.findOne({
+            where: { orderID: orderID }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                error: 'Transaction not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            status: statusResult,
+            transaction: transaction
+        });
+    } catch (error) {
+        console.error('Status check error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.response?.data?.message || error.message
+        });
+    }
+});
+
+// API endpoint to process crypto transfer after successful M-Pesa payment
+app.post('/api/onramp/process', async (req, res) => {
+    try {
+        const { orderID, walletAddress, network, cryptoCurrency } = req.body;
+        
+        // Validate required fields
+        if (!orderID || !walletAddress || !network) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: orderID, walletAddress, network'
+            });
+        }
+
+        // Get transaction from database
+        const transaction = await Transaction.findOne({
+            where: { orderID: orderID }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                error: 'Transaction not found'
+            });
+        }
+
+        // Check if transaction is ready for processing
+        if (transaction.status !== 'stk_initiated') {
+            return res.status(400).json({
+                success: false,
+                error: 'Transaction is not ready for processing'
+            });
+        }
+
+        try {
+            // Process crypto transfer
+            const cryptoResult = await processCryptoTransfer(
+                network,
+                walletAddress,
+                orderID,
+                process.env.PROJECT_NAME || 'stablecoin-mpesa-bridge'
+            );
+            
+            // Update transaction
+            await transaction.update({
+                tokenTransactionId: cryptoResult.hash,
+                status: 'completed'
+            });
+
+            res.json({
+                success: true,
+                cryptoResult: cryptoResult,
+                transaction: transaction
+            });
+        } catch (error) {
+            // Update transaction with error
+            await transaction.update({
+                status: 'failed',
+                error: error.message
+            });
+            throw error;
+        }
+    } catch (error) {
+        console.error('Process crypto error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.response?.data?.message || error.message
+        });
+    }
+});
+
+// API endpoint for offramp (Crypto to M-Pesa)
+app.post('/api/offramp', async (req, res) => {
+    try {
+        const { amount, phoneNumber, cryptoCurrency, network, walletAddress } = req.body;
+        
+        // Validate required fields
+        if (!amount || !phoneNumber || !cryptoCurrency || !network || !walletAddress) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: amount, phoneNumber, cryptoCurrency, network, walletAddress'
+            });
+        }
+
+        // Validate phone number format
+        if (!phoneNumber.match(/^254[0-9]{9}$/)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid M-Pesa phone number format. Must start with 254 followed by 9 digits'
+            });
+        }
+
+        // Validate wallet address
+        if (!ethers.utils.isAddress(walletAddress)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid wallet address format'
+            });
+        }
+
+        // Generate order ID
+        const orderID = generateOrderID();
+
+        // Create transaction record
+        const transaction = await Transaction.create({
+            tokenAmount: amount,
+            mpesaPhoneNumber: phoneNumber,
+            tokenType: cryptoCurrency,
+            status: 'pending',
+            orderID: orderID,
+            transferType: 'offramp',
+            walletAddress: walletAddress,
+            network: network
+        });
+
+        try {
+            // First send stablecoin tokens to Swypt's address
+            const tokenResult = await sendStableCoinTokens(
+                cryptoCurrency,
+                getSwyptRecipientAddress(network),
+                amount,
+                network
+            );
+            
+            // Update transaction with token result
+            await transaction.update({
+                tokenTransactionId: tokenResult.id,
+                status: 'tokens_sent'
+            });
+
+            // TODO: Implement Swypt's offramp API call here
+            // This would typically involve calling Swypt's offramp endpoint
+            // For now, we'll simulate the M-Pesa transfer
+            
+            // Simulate M-Pesa transfer (replace with actual Swypt API call)
+            const mpesaResult = {
+                id: `MPESA-${Date.now()}`,
+                status: 'completed',
+                amount: amount,
+                phoneNumber: phoneNumber
+            };
+
+            // Update transaction
+            await transaction.update({
+                mpesaTransactionId: mpesaResult.id,
+                status: 'completed'
+            });
+
+            res.json({
+                success: true,
+                orderID: orderID,
+                transaction: transaction,
+                tokenResult: tokenResult,
+                mpesaResult: mpesaResult
+            });
+        } catch (error) {
+            // Update transaction with error
+            await transaction.update({
+                status: 'failed',
+                error: error.message
+            });
+            throw error;
+        }
+    } catch (error) {
+        console.error('Offramp error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.response?.data?.message || error.message
+        });
+    }
+});
+
 // Simple frontend
 app.get('/', (req, res) => {
     res.send(`
         <html>
             <head>
-                <title>Lisk to M-Pesa Transfer</title>
-                <!-- Load React first -->
+                <title>Base Wallet to M-Pesa Bridge</title>
                 <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin></script>
                 <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
-                <!-- Load Swypt Checkout SDK -->
                 <script src="/node_modules/swypt-checkout/dist/swypt-checkout.umd.js"></script>
                 <link rel="stylesheet" href="/node_modules/swypt-checkout/dist/styles.css">
                 <style>
@@ -292,7 +676,7 @@ app.get('/', (req, res) => {
 
                     body {
                         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        max-width: 1200px;
+                        max-width: 1400px;
                         margin: 0 auto;
                         padding: var(--spacing);
                         background-color: var(--background-color);
@@ -304,6 +688,10 @@ app.get('/', (req, res) => {
                         grid-template-columns: 1fr 1fr;
                         gap: var(--spacing);
                         margin-top: var(--spacing);
+                    }
+
+                    .full-width {
+                        grid-column: 1 / -1;
                     }
 
                     .card {
@@ -337,16 +725,17 @@ app.get('/', (req, res) => {
                         color: var(--primary-color);
                     }
 
-                    input {
+                    input, select {
                         width: 100%;
                         padding: 12px;
                         border: 2px solid #ddd;
                         border-radius: var(--border-radius);
                         font-size: 16px;
                         transition: border-color 0.3s;
+                        background-color: white;
                     }
 
-                    input:focus {
+                    input:focus, select:focus {
                         border-color: var(--primary-color);
                         outline: none;
                     }
@@ -362,13 +751,19 @@ app.get('/', (req, res) => {
                         font-size: 16px;
                         font-weight: 600;
                         transition: opacity 0.3s;
+                        margin-bottom: 10px;
                     }
 
                     button:hover {
                         opacity: 0.9;
                     }
 
-                    .conversion-info {
+                    button:disabled {
+                        opacity: 0.5;
+                        cursor: not-allowed;
+                    }
+
+                    .quote-info {
                         background: #f8f9fa;
                         padding: 15px;
                         border-radius: var(--border-radius);
@@ -401,6 +796,8 @@ app.get('/', (req, res) => {
                     }
 
                     .status-pending { background: #fff3cd; color: #856404; }
+                    .status-stk_initiated { background: #cce5ff; color: #004085; }
+                    .status-tokens_sent { background: #d1ecf1; color: #0c5460; }
                     .status-completed { background: #d4edda; color: #155724; }
                     .status-failed { background: #f8d7da; color: #721c24; }
 
@@ -413,6 +810,8 @@ app.get('/', (req, res) => {
 
                     .success { background: #d4edda; color: #155724; }
                     .error { background: #f8d7da; color: #721c24; }
+                    .info { background: #d1ecf1; color: #0c5460; }
+                    
                     .loading-spinner {
                         display: inline-block;
                         width: 20px;
@@ -426,346 +825,411 @@ app.get('/', (req, res) => {
                     @keyframes spin {
                         to { transform: rotate(360deg); }
                     }
-                    select {
-                        width: 100%;
-                        padding: 12px;
-                        border: 2px solid #ddd;
-                        border-radius: var(--border-radius);
-                        font-size: 16px;
-                        transition: border-color 0.3s;
-                        background-color: white;
-                        cursor: pointer;
-                    }
 
-                    select:focus {
-                        border-color: var(--primary-color);
-                        outline: none;
-                    }
-
-                    .payment-option {
+                    .tabs {
                         display: flex;
-                        align-items: center;
-                        gap: 8px;
-                        padding: 8px;
+                        margin-bottom: 20px;
+                        border-bottom: 2px solid #ddd;
                     }
 
-                    .payment-option img {
-                        width: 24px;
-                        height: 24px;
-                        object-fit: contain;
+                    .tab {
+                        padding: 12px 24px;
+                        background: none;
+                        border: none;
+                        cursor: pointer;
+                        font-size: 16px;
+                        font-weight: 600;
+                        color: #666;
+                        border-bottom: 3px solid transparent;
+                        margin-bottom: -2px;
+                    }
+
+                    .tab.active {
+                        color: var(--primary-color);
+                        border-bottom-color: var(--primary-color);
+                    }
+
+                    .tab-content {
+                        display: none;
+                    }
+
+                    .tab-content.active {
+                        display: block;
                     }
                 </style>
             </head>
             <body>
-                <h1>Lisk to M-Pesa Transfer</h1>
+                <h1>Base Wallet to M-Pesa Bridge</h1>
                 
                 <div class="container">
-                    <div class="card">
-                        <h2>Register Your Account</h2>
-                        <form id="registerForm">
-                            <div class="form-group">
-                                <label for="liskAddress">Lisk Address:</label>
-                                <input type="text" id="liskAddress" required placeholder="Enter your Lisk address">
-                            </div>
-                            <div class="form-group">
-                                <label for="mpesaPhone">M-Pesa Phone Number:</label>
-                                <input type="tel" id="mpesaPhone" required placeholder="Enter your M-Pesa number">
-                            </div>
-                            <button type="submit">Register Account</button>
-                        </form>
-                    </div>
+                    <div class="card full-width">
+                        <div class="tabs">
+                            <button class="tab active" onclick="showTab('quote')">Get Quote</button>
+                            <button class="tab" onclick="showTab('onramp')">M-Pesa to Crypto (Onramp)</button>
+                            <button class="tab" onclick="showTab('offramp')">Crypto to M-Pesa (Offramp)</button>
+                            <button class="tab" onclick="showTab('transactions')">Transaction History</button>
+                        </div>
 
-                    <div class="card">
-                        <h2>Make a Transfer</h2>
-                        <form id="transferForm">
-                            <div class="form-group">
-                                <label for="paymentType">Payment Method:</label>
-                                <select id="paymentType" required>
-                                    <option value="LSK">Lisk (LSK)</option>
-                                    <option value="USDT">Tether (USDT)</option>
-                                    <option value="USDC">USD Coin (USDC)</option>
-                                    <option value="CELO">Celo (CELO)</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="liskAmount">Amount:</label>
-                                <input type="number" id="liskAmount" required min="0.00000001" step="0.00000001" placeholder="Enter amount">
-                                <div class="conversion-info">
-                                    <p>Estimated KES: <span id="kesAmount">0.00</span> KES</p>
-                                    <p><small>Exchange rate: 1 LSK ≈ 100 KES</small></p>
+                        <!-- Quote Tab -->
+                        <div id="quote" class="tab-content active">
+                            <h2>Get Transfer Quote</h2>
+                            <form id="quoteForm">
+                                <div class="form-group">
+                                    <label for="quoteType">Transfer Type:</label>
+                                    <select id="quoteType" required>
+                                        <option value="">Select type</option>
+                                        <option value="onramp">M-Pesa to Crypto (Onramp)</option>
+                                        <option value="offramp">Crypto to M-Pesa (Offramp)</option>
+                                    </select>
                                 </div>
-                            </div>
-                            <div class="form-group">
-                                <label for="mpesaPhone">M-Pesa Phone Number:</label>
-                                <input type="tel" id="mpesaPhone" required placeholder="Enter recipient's M-Pesa number">
-                            </div>
-                            <button type="button" onclick="handlePayment()">Proceed to Payment</button>
-                        </form>
+                                <div class="form-group">
+                                    <label for="quoteAmount">Amount:</label>
+                                    <input type="number" id="quoteAmount" required placeholder="Enter amount">
+                                </div>
+                                <div class="form-group">
+                                    <label for="quoteFiatCurrency">Fiat Currency:</label>
+                                    <select id="quoteFiatCurrency" required>
+                                        <option value="KES">KES (Kenyan Shilling)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="quoteCryptoCurrency">Crypto Currency:</label>
+                                    <select id="quoteCryptoCurrency" required>
+                                        <option value="USDT">USDT</option>
+                                        <option value="USDC">USDC</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="quoteNetwork">Network:</label>
+                                    <select id="quoteNetwork" required>
+                                        <option value="base">Base</option>
+                                        <option value="lisk">Lisk</option>
+                                        <option value="celo">Celo</option>
+                                    </select>
+                                </div>
+                                <button type="submit">Get Quote</button>
+                            </form>
+                            <div id="quoteResult"></div>
+                        </div>
+
+                        <!-- Onramp Tab -->
+                        <div id="onramp" class="tab-content">
+                            <h2>M-Pesa to Crypto Transfer (Onramp)</h2>
+                            <form id="onrampForm">
+                                <div class="form-group">
+                                    <label for="onrampAmount">Amount (KES):</label>
+                                    <input type="number" id="onrampAmount" required placeholder="Enter amount in KES">
+                                </div>
+                                <div class="form-group">
+                                    <label for="onrampPhone">M-Pesa Phone Number:</label>
+                                    <input type="text" id="onrampPhone" required placeholder="254XXXXXXXXX">
+                                </div>
+                                <div class="form-group">
+                                    <label for="onrampCrypto">Crypto Currency:</label>
+                                    <select id="onrampCrypto" required>
+                                        <option value="USDT">USDT</option>
+                                        <option value="USDC">USDC</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="onrampNetwork">Network:</label>
+                                    <select id="onrampNetwork" required>
+                                        <option value="base">Base</option>
+                                        <option value="lisk">Lisk</option>
+                                        <option value="celo">Celo</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="onrampWallet">Wallet Address:</label>
+                                    <input type="text" id="onrampWallet" required placeholder="Enter your wallet address">
+                                </div>
+                                <button type="submit">Initiate Transfer</button>
+                            </form>
+                            <div id="onrampResult"></div>
+                        </div>
+
+                        <!-- Offramp Tab -->
+                        <div id="offramp" class="tab-content">
+                            <h2>Crypto to M-Pesa Transfer (Offramp)</h2>
+                            <form id="offrampForm">
+                                <div class="form-group">
+                                    <label for="offrampAmount">Amount (Crypto):</label>
+                                    <input type="number" id="offrampAmount" required placeholder="Enter crypto amount">
+                                </div>
+                                <div class="form-group">
+                                    <label for="offrampPhone">M-Pesa Phone Number:</label>
+                                    <input type="text" id="offrampPhone" required placeholder="254XXXXXXXXX">
+                                </div>
+                                <div class="form-group">
+                                    <label for="offrampCrypto">Crypto Currency:</label>
+                                    <select id="offrampCrypto" required>
+                                        <option value="USDT">USDT</option>
+                                        <option value="USDC">USDC</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="offrampNetwork">Network:</label>
+                                    <select id="offrampNetwork" required>
+                                        <option value="base">Base</option>
+                                        <option value="lisk">Lisk</option>
+                                        <option value="celo">Celo</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="offrampWallet">Wallet Address:</label>
+                                    <input type="text" id="offrampWallet" required placeholder="Enter your wallet address">
+                                </div>
+                                <button type="submit">Initiate Transfer</button>
+                            </form>
+                            <div id="offrampResult"></div>
+                        </div>
+
+                        <!-- Transactions Tab -->
+                        <div id="transactions" class="tab-content">
+                            <h2>Transaction History</h2>
+                            <button onclick="loadTransactions()">Refresh Transactions</button>
+                            <div id="transactionsList"></div>
+                        </div>
                     </div>
                 </div>
-
-                <div id="result"></div>
-
-                <div class="card">
-                    <h2>Transaction History</h2>
-                    <div id="transactionList" class="transaction-list"></div>
-                </div>
-
-                <div id="depositModal"></div>
 
                 <script>
-                    // Initialize Swypt Checkout
-                    let DepositModal;
-                    let isSwyptLoaded = false;
-                    let initializationAttempts = 0;
-                    const MAX_ATTEMPTS = 3;
-
-                    // Function to show loading state
-                    function showLoading(element, message) {
-                        element.innerHTML = '<div class="status-pending"><span class="loading-spinner"></span>' + message + '</div>';
-                    }
-
-                    // Function to initialize Swypt
-                    function initializeSwypt() {
-                        console.log('Initializing Swypt...');
-                        console.log('React available:', !!window.React);
-                        console.log('ReactDOM available:', !!window.ReactDOM);
-                        console.log('SwyptCheckout available:', !!window.SwyptCheckout);
+                    function showTab(tabName) {
+                        // Hide all tab contents
+                        document.querySelectorAll('.tab-content').forEach(content => {
+                            content.classList.remove('active');
+                        });
                         
-                        try {
-                            if (!window.React) {
-                                throw new Error('React not loaded');
-                            }
-                            if (!window.ReactDOM) {
-                                throw new Error('ReactDOM not loaded');
-                            }
-                            if (!window.SwyptCheckout) {
-                                throw new Error('SwyptCheckout not loaded');
-                            }
-
-                            // Get the DepositModal component directly from the global SwyptCheckout object
-                            const { DepositModal: Modal } = window.SwyptCheckout;
-                            if (!Modal) {
-                                throw new Error('DepositModal component not found in SwyptCheckout');
-                            }
-
-                            DepositModal = Modal;
-                            isSwyptLoaded = true;
-                            console.log('Swypt Checkout initialized successfully');
-
-                            // Enable the payment button
-                            const paymentButton = document.getElementById('openDepositModal');
-                            if (paymentButton) {
-                                paymentButton.disabled = false;
-                                paymentButton.style.opacity = '1';
-                            }
-                        } catch (error) {
-                            console.error('Failed to initialize Swypt:', error);
-                            isSwyptLoaded = false;
-                            throw error;
-                        }
-                    }
-
-                    // Function to retry initialization
-                    function retryInitialization() {
-                        if (initializationAttempts >= MAX_ATTEMPTS) {
-                            console.error('Max initialization attempts reached');
-                            return;
-                        }
-
-                        initializationAttempts++;
-                        console.log('Retry attempt', initializationAttempts);
+                        // Remove active class from all tabs
+                        document.querySelectorAll('.tab').forEach(tab => {
+                            tab.classList.remove('active');
+                        });
                         
-                        try {
-                            initializeSwypt();
-                        } catch (error) {
-                            console.error('Initialization attempt failed:', error);
-                            setTimeout(retryInitialization, 1000);
-                        }
+                        // Show selected tab content
+                        document.getElementById(tabName).classList.add('active');
+                        
+                        // Add active class to clicked tab
+                        event.target.classList.add('active');
                     }
 
-                    // Wait for all scripts to load
-                    window.addEventListener('load', function() {
-                        console.log('Window loaded, initializing Swypt...');
-                        retryInitialization();
-                    });
-
-                    // Lisk to KES conversion
-                    const LSK_TO_KES_RATE = 100;
-                    document.getElementById('liskAmount').addEventListener('input', function(e) {
-                        const liskAmount = parseFloat(e.target.value) || 0;
-                        const kesAmount = liskAmount * LSK_TO_KES_RATE;
-                        document.getElementById('kesAmount').textContent = kesAmount.toFixed(2);
-                    });
-
-                    // Register form handler
-                    document.getElementById('registerForm').addEventListener('submit', async (e) => {
+                    // Quote Form
+                    document.getElementById('quoteForm').addEventListener('submit', async (e) => {
                         e.preventDefault();
-                        const resultDiv = document.getElementById('result');
-                        showLoading(resultDiv, 'Registering...');
-
+                        const resultDiv = document.getElementById('quoteResult');
+                        resultDiv.innerHTML = '<div class="info">Getting quote...</div>';
+                        
                         try {
-                            console.log('Submitting registration form...');
-                            const response = await fetch('/register', {
+                            const response = await fetch('/api/quote', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    liskAddress: document.getElementById('liskAddress').value,
-                                    mpesaPhoneNumber: document.getElementById('mpesaPhone').value
+                                    type: document.getElementById('quoteType').value,
+                                    amount: document.getElementById('quoteAmount').value,
+                                    fiatCurrency: document.getElementById('quoteFiatCurrency').value,
+                                    cryptoCurrency: document.getElementById('quoteCryptoCurrency').value,
+                                    network: document.getElementById('quoteNetwork').value
                                 })
                             });
-                            const data = await response.json();
-                            console.log('Registration response:', data);
                             
-                            resultDiv.innerHTML = data.success 
-                                ? '<div class="success">Registration successful!</div>'
-                                : '<div class="error">Registration failed: ' + data.error + '</div>';
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                                const quote = data.quote;
+                                resultDiv.innerHTML = \`
+                                    <div class="quote-info">
+                                        <h3>Quote Details</h3>
+                                        <p><strong>Input Amount:</strong> \${quote.inputAmount} \${quote.inputCurrency}</p>
+                                        <p><strong>Output Amount:</strong> \${quote.outputAmount} \${quote.outputCurrency}</p>
+                                        <p><strong>Exchange Rate:</strong> \${quote.exchangeRate}</p>
+                                        <p><strong>Fee:</strong> \${quote.fee.amount} \${quote.fee.currency}</p>
+                                        <p><strong>Limits:</strong> Min: \${quote.limits.min} Max: \${quote.limits.max} \${quote.limits.currency}</p>
+                                    </div>
+                                \`;
+                            } else {
+                                resultDiv.innerHTML = \`<div class="error">\${data.error}</div>\`;
+                            }
                         } catch (error) {
-                            console.error('Registration error:', error);
-                            resultDiv.innerHTML = '<div class="error">Error: ' + error.message + '</div>';
+                            resultDiv.innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
                         }
                     });
 
-                    // Payment button handler
-                    function handlePayment() {
-                        console.log('Payment button clicked');
-                        console.log('Swypt loaded:', isSwyptLoaded);
-                        console.log('DepositModal available:', !!DepositModal);
+                    // Onramp Form
+                    document.getElementById('onrampForm').addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const resultDiv = document.getElementById('onrampResult');
+                        resultDiv.innerHTML = '<div class="info">Initiating transfer...</div>';
                         
-                        const resultDiv = document.getElementById('result');
-                        
-                        if (!isSwyptLoaded || !DepositModal) {
-                            showLoading(resultDiv, 'Loading payment system...');
-                            try {
-                                initializeSwypt();
-                                if (!isSwyptLoaded) {
-                                    throw new Error('Failed to initialize payment system');
-                                }
-                            } catch (error) {
-                                console.error('Payment system initialization error:', error);
-                                resultDiv.innerHTML = '<div class="error">Error loading payment system: ' + error.message + '</div>';
-                                return;
-                            }
-                        }
-                        
-                        // Get form values
-                        const amount = document.getElementById('liskAmount').value;
-                        const mpesaPhone = document.getElementById('mpesaPhone').value;
-                        const paymentType = document.getElementById('paymentType').value;
-                        
-                        if (!amount || !mpesaPhone || !paymentType) {
-                            resultDiv.innerHTML = '<div class="error">Please fill in all required fields</div>';
-                            return;
-                        }
-
                         try {
-                            // Prevent body scrolling
-                            document.body.style.overflow = 'hidden';
-
-                            // Create modal container with overlay
-                            const modalContainer = document.createElement('div');
-                            modalContainer.className = 'fixed inset-0 z-50 flex items-center justify-center';
-                            
-                            // Create backdrop
-                            const backdrop = document.createElement('div');
-                            backdrop.className = 'fixed inset-0 bg-black/80 backdrop-blur-sm';
-                            backdrop.id = 'modalBackdrop';
-                            modalContainer.appendChild(backdrop);
-                            
-                            // Create content container
-                            const contentContainer = document.createElement('div');
-                            contentContainer.className = 'relative z-50';
-                            contentContainer.id = 'modalContent';
-                            modalContainer.appendChild(contentContainer);
-                            
-                            document.body.appendChild(modalContainer);
-
-                            // Add click handler for backdrop
-                            document.getElementById('modalBackdrop').addEventListener('click', () => {
-                                handleCloseModal();
+                            const response = await fetch('/api/onramp', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    amount: document.getElementById('onrampAmount').value,
+                                    phoneNumber: document.getElementById('onrampPhone').value,
+                                    cryptoCurrency: document.getElementById('onrampCrypto').value,
+                                    network: document.getElementById('onrampNetwork').value,
+                                    walletAddress: document.getElementById('onrampWallet').value
+                                })
                             });
-
-                            console.log('Rendering DepositModal...');
-                            // Render modal
-                            ReactDOM.render(
-                                React.createElement(DepositModal, {
-                                    isOpen: true,
-                                    onClose: handleCloseModal,
-                                    headerBackgroundColor: "linear-gradient(to right, #044639, #FF4040)",
-                                    businessName: "Lisk to M-Pesa Bridge",
-                                    merchantName: "Lisk Bridge",
-                                    merchantAddress: "lsk24cd35u4jdq8szo3pnsqe5dsxwrnazyqqqg5eu",
-                                    amount: parseFloat(amount),
-                                    onSuccess: async (result) => {
-                                        console.log('Payment successful:', result);
-                                        try {
-                                            const response = await fetch('/transfer', {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({
-                                                    liskAmount: amount,
-                                                    mpesaPhoneNumber: mpesaPhone,
-                                                    paymentType: paymentType
-                                                })
-                                            });
-                                            const data = await response.json();
-                                            console.log('Transfer response:', data);
-                                            
-                                            resultDiv.innerHTML = data.success 
-                                                ? '<div class="success">Transfer successful! Check your M-Pesa for confirmation.</div>'
-                                                : '<div class="error">Transfer failed: ' + data.error + '</div>';
-                                            
-                                            loadTransactions();
-                                            handleCloseModal();
-                                        } catch (error) {
-                                            console.error('Transfer error:', error);
-                                            resultDiv.innerHTML = '<div class="error">Error: ' + error.message + '</div>';
-                                        }
-                                    }
-                                }),
-                                document.getElementById('modalContent')
-                            );
+                            
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                                resultDiv.innerHTML = \`
+                                    <div class="success">
+                                        <h3>Transfer Initiated Successfully!</h3>
+                                        <p><strong>Order ID:</strong> \${data.orderID}</p>
+                                        <p><strong>Status:</strong> STK Push initiated</p>
+                                        <p>Please check your phone for the M-Pesa prompt and complete the payment.</p>
+                                        <button onclick="checkOnrampStatus('\${data.orderID}')">Check Status</button>
+                                    </div>
+                                \`;
+                            } else {
+                                resultDiv.innerHTML = \`<div class="error">\${data.error}</div>\`;
+                            }
                         } catch (error) {
-                            console.error('Error opening modal:', error);
-                            resultDiv.innerHTML = '<div class="error">Error opening payment modal: ' + error.message + '</div>';
+                            resultDiv.innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
                         }
-                    }
+                    });
 
-                    function handleCloseModal() {
-                        // Restore body scrolling
-                        document.body.style.overflow = 'auto';
+                    // Offramp Form
+                    document.getElementById('offrampForm').addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const resultDiv = document.getElementById('offrampResult');
+                        resultDiv.innerHTML = '<div class="info">Initiating transfer...</div>';
                         
-                        // Clean up modal
-                        const modalContainer = document.querySelector('.fixed.inset-0.z-50');
-                        if (modalContainer) {
-                            ReactDOM.unmountComponentAtNode(document.getElementById('modalContent'));
-                            modalContainer.remove();
+                        try {
+                            const response = await fetch('/api/offramp', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    amount: document.getElementById('offrampAmount').value,
+                                    phoneNumber: document.getElementById('offrampPhone').value,
+                                    cryptoCurrency: document.getElementById('offrampCrypto').value,
+                                    network: document.getElementById('offrampNetwork').value,
+                                    walletAddress: document.getElementById('offrampWallet').value
+                                })
+                            });
+                            
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                                resultDiv.innerHTML = \`
+                                    <div class="success">
+                                        <h3>Transfer Initiated Successfully!</h3>
+                                        <p><strong>Order ID:</strong> \${data.orderID}</p>
+                                        <p><strong>Status:</strong> \${data.transaction.status}</p>
+                                        <p><strong>Token Transaction:</strong> \${data.tokenResult.id}</p>
+                                        <p>Your crypto has been sent and M-Pesa transfer is being processed.</p>
+                                    </div>
+                                \`;
+                            } else {
+                                resultDiv.innerHTML = \`<div class="error">\${data.error}</div>\`;
+                            }
+                        } catch (error) {
+                            resultDiv.innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
+                        }
+                    });
+
+                    async function checkOnrampStatus(orderID) {
+                        try {
+                            const response = await fetch(\`/api/onramp/status/\${orderID}\`);
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                                const status = data.status;
+                                const transaction = data.transaction;
+                                
+                                let statusHtml = \`
+                                    <div class="info">
+                                        <h3>Transaction Status</h3>
+                                        <p><strong>Order ID:</strong> \${orderID}</p>
+                                        <p><strong>Status:</strong> \${status.status}</p>
+                                        <p><strong>Amount:</strong> \${transaction.tokenAmount} \${transaction.tokenType}</p>
+                                        <p><strong>Phone:</strong> \${transaction.mpesaPhoneNumber}</p>
+                                \`;
+                                
+                                if (status.status === 'SUCCESS') {
+                                    statusHtml += \`
+                                        <p><strong>M-Pesa Receipt:</strong> \${status.details.mpesaReceipt}</p>
+                                        <button onclick="processCryptoTransfer('\${orderID}', '\${transaction.walletAddress}', '\${transaction.network}', '\${transaction.tokenType}')">Process Crypto Transfer</button>
+                                    \`;
+                                }
+                                
+                                statusHtml += '</div>';
+                                document.getElementById('onrampResult').innerHTML = statusHtml;
+                            } else {
+                                document.getElementById('onrampResult').innerHTML = \`<div class="error">\${data.error}</div>\`;
+                            }
+                        } catch (error) {
+                            document.getElementById('onrampResult').innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
                         }
                     }
 
-                    // Add click handler to payment button
-                    document.getElementById('openDepositModal').addEventListener('click', handlePayment);
+                    async function processCryptoTransfer(orderID, walletAddress, network, cryptoCurrency) {
+                        try {
+                            const response = await fetch('/api/onramp/process', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    orderID: orderID,
+                                    walletAddress: walletAddress,
+                                    network: network,
+                                    cryptoCurrency: cryptoCurrency
+                                })
+                            });
+                            
+                            const data = await response.json();
+                            
+                            if (data.success) {
+                                document.getElementById('onrampResult').innerHTML = \`
+                                    <div class="success">
+                                        <h3>Crypto Transfer Completed!</h3>
+                                        <p><strong>Transaction Hash:</strong> \${data.cryptoResult.hash}</p>
+                                        <p><strong>Status:</strong> \${data.transaction.status}</p>
+                                        <p>Your crypto has been sent to your wallet successfully!</p>
+                                    </div>
+                                \`;
+                            } else {
+                                document.getElementById('onrampResult').innerHTML = \`<div class="error">\${data.error}</div>\`;
+                            }
+                        } catch (error) {
+                            document.getElementById('onrampResult').innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
+                        }
+                    }
 
-                    // Load transactions
                     async function loadTransactions() {
                         try {
                             const response = await fetch('/transactions');
                             const data = await response.json();
-                            const transactionList = document.getElementById('transactionList');
                             
                             if (data.success) {
-                                transactionList.innerHTML = data.transactions.map(function(tx) {
-                                    return '<div class="transaction-item">' +
-                                        '<p><strong>Payment Type:</strong> ' + tx.paymentType + '</p>' +
-                                        '<p><strong>Amount:</strong> ' + tx.liskAmount + ' ' + tx.paymentType + ' (≈ ' + (parseFloat(tx.liskAmount) * LSK_TO_KES_RATE).toFixed(2) + ' KES)</p>' +
-                                        '<p><strong>Phone:</strong> ' + tx.mpesaPhoneNumber + '</p>' +
-                                        '<p><strong>Status:</strong> <span class="status-badge status-' + tx.status + '">' + tx.status + '</span></p>' +
-                                        '<p><strong>Time:</strong> ' + new Date(tx.createdAt).toLocaleString() + '</p>' +
-                                    '</div>';
-                                }).join('');
+                                const transactionsList = document.getElementById('transactionsList');
+                                if (data.transactions.length === 0) {
+                                    transactionsList.innerHTML = '<div class="info">No transactions found.</div>';
+                                    return;
+                                }
+                                
+                                let html = '';
+                                data.transactions.forEach(tx => {
+                                    html += \`
+                                        <div class="transaction-item">
+                                            <p><strong>Order ID:</strong> \${tx.orderID || 'N/A'}</p>
+                                            <p><strong>Type:</strong> \${tx.transferType || 'Legacy'}</p>
+                                            <p><strong>Amount:</strong> \${tx.tokenAmount} \${tx.tokenType}</p>
+                                            <p><strong>Phone:</strong> \${tx.mpesaPhoneNumber}</p>
+                                            <p><strong>Status:</strong> <span class="status-badge status-\${tx.status}">\${tx.status}</span></p>
+                                            <p><strong>Created:</strong> \${new Date(tx.createdAt).toLocaleString()}</p>
+                                            \${tx.error ? \`<p><strong>Error:</strong> \${tx.error}</p>\` : ''}
+                                        </div>
+                                    \`;
+                                });
+                                transactionsList.innerHTML = html;
+                            } else {
+                                document.getElementById('transactionsList').innerHTML = \`<div class="error">\${data.error}</div>\`;
                             }
                         } catch (error) {
-                            console.error('Error loading transactions:', error);
+                            document.getElementById('transactionsList').innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
                         }
                     }
 
@@ -777,16 +1241,15 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Start the server after connecting to Lisk node and initializing database
+// Start the server after initializing database
 (async () => {
     try {
         // Initialize database
         await initDatabase();
         
-        const PORT = process.env.PORT || 3000;
+        const PORT = process.env.PORT || 3001;
         app.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);
-            console.log(`Connected to Lisk network: ${liskConfig.network.name}`);
         });
     } catch (err) {
         console.error('Failed to start server:', err);

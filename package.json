@@ -4,8 +4,12 @@
   "description": "MVP for Stablecoin to M-Pesa transfer using Swypt APIs",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "server": "node index.js",
+    "server:dev": "nodemon index.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
@@ -26,6 +30,9 @@
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "nodemon": "^3.0.1",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "tailwindcss": "^3.3.0",
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.24"
   }
 }

@@ -112,11 +112,11 @@ async function initiateSTKPush(amount, phoneNumber, orderID) {
             phoneNumber: phoneNumber,
             orderID: orderID
         }, {
-            headers: {
+                headers: {
                 'x-api-key': SWYPT_API_KEY,
                 'x-api-secret': SWYPT_API_SECRET,
-                'Content-Type': 'application/json'
-            }
+                    'Content-Type': 'application/json'
+                }
         });
         
         return response.data;
@@ -874,18 +874,18 @@ app.get('/', (req, res) => {
                         <div id="quote" class="tab-content active">
                             <h2>Get Transfer Quote</h2>
                             <form id="quoteForm">
-                                <div class="form-group">
+                            <div class="form-group">
                                     <label for="quoteType">Transfer Type:</label>
                                     <select id="quoteType" required>
                                         <option value="">Select type</option>
                                         <option value="onramp">M-Pesa to Crypto (Onramp)</option>
                                         <option value="offramp">Crypto to M-Pesa (Offramp)</option>
                                     </select>
-                                </div>
-                                <div class="form-group">
+                            </div>
+                            <div class="form-group">
                                     <label for="quoteAmount">Amount:</label>
                                     <input type="number" id="quoteAmount" required placeholder="Enter amount">
-                                </div>
+                            </div>
                                 <div class="form-group">
                                     <label for="quoteFiatCurrency">Fiat Currency:</label>
                                     <select id="quoteFiatCurrency" required>
@@ -908,19 +908,19 @@ app.get('/', (req, res) => {
                                     </select>
                                 </div>
                                 <button type="submit">Get Quote</button>
-                            </form>
+                        </form>
                             <div id="quoteResult"></div>
-                        </div>
+                    </div>
 
                         <!-- Onramp Tab -->
                         <div id="onramp" class="tab-content">
                             <h2>M-Pesa to Crypto Transfer (Onramp)</h2>
                             <form id="onrampForm">
-                                <div class="form-group">
+                            <div class="form-group">
                                     <label for="onrampAmount">Amount (KES):</label>
                                     <input type="number" id="onrampAmount" required placeholder="Enter amount in KES">
-                                </div>
-                                <div class="form-group">
+                            </div>
+                            <div class="form-group">
                                     <label for="onrampPhone">M-Pesa Phone Number:</label>
                                     <input type="text" id="onrampPhone" required placeholder="254XXXXXXXXX">
                                 </div>
@@ -930,23 +930,23 @@ app.get('/', (req, res) => {
                                         <option value="USDT">USDT</option>
                                         <option value="USDC">USDC</option>
                                     </select>
-                                </div>
-                                <div class="form-group">
+                            </div>
+                            <div class="form-group">
                                     <label for="onrampNetwork">Network:</label>
                                     <select id="onrampNetwork" required>
                                         <option value="base">Base</option>
                                         <option value="lisk">Lisk</option>
                                         <option value="celo">Celo</option>
                                     </select>
-                                </div>
+                            </div>
                                 <div class="form-group">
                                     <label for="onrampWallet">Wallet Address:</label>
                                     <input type="text" id="onrampWallet" required placeholder="Enter your wallet address">
                                 </div>
                                 <button type="submit">Initiate Transfer</button>
-                            </form>
+                        </form>
                             <div id="onrampResult"></div>
-                        </div>
+                    </div>
 
                         <!-- Offramp Tab -->
                         <div id="offramp" class="tab-content">
@@ -982,11 +982,11 @@ app.get('/', (req, res) => {
                                 <button type="submit">Initiate Transfer</button>
                             </form>
                             <div id="offrampResult"></div>
-                        </div>
+                </div>
 
                         <!-- Transactions Tab -->
                         <div id="transactions" class="tab-content">
-                            <h2>Transaction History</h2>
+                    <h2>Transaction History</h2>
                             <button onclick="loadTransactions()">Refresh Transactions</button>
                             <div id="transactionsList"></div>
                         </div>
@@ -1058,7 +1058,7 @@ app.get('/', (req, res) => {
                         e.preventDefault();
                         const resultDiv = document.getElementById('onrampResult');
                         resultDiv.innerHTML = '<div class="info">Initiating transfer...</div>';
-                        
+
                         try {
                             const response = await fetch('/api/onramp', {
                                 method: 'POST',
@@ -1125,8 +1125,8 @@ app.get('/', (req, res) => {
                                 \`;
                             } else {
                                 resultDiv.innerHTML = \`<div class="error">\${data.error}</div>\`;
-                            }
-                        } catch (error) {
+                                }
+                            } catch (error) {
                             resultDiv.innerHTML = \`<div class="error">Error: \${error.message}</div>\`;
                         }
                     });
@@ -1169,17 +1169,17 @@ app.get('/', (req, res) => {
                     async function processCryptoTransfer(orderID, walletAddress, network, cryptoCurrency) {
                         try {
                             const response = await fetch('/api/onramp/process', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({
                                     orderID: orderID,
                                     walletAddress: walletAddress,
                                     network: network,
                                     cryptoCurrency: cryptoCurrency
-                                })
-                            });
+                                                })
+                                            });
                             
-                            const data = await response.json();
+                                            const data = await response.json();
                             
                             if (data.success) {
                                 document.getElementById('onrampResult').innerHTML = \`

@@ -2,10 +2,15 @@
 
 import React from 'react';
 import Link from 'next/link';
+import WalletConnect from '@/components/WalletConnect';
 
 export default function HomePage() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center relative">
+      {/* Connect Wallet Button */}
+      <div className="absolute top-6 right-8">
+        <WalletConnect />
+      </div>
       <div className="max-w-4xl mx-auto p-8">
         <div className="text-center mb-12">
           <h1 className="text-5xl font-bold text-gray-900 mb-4">
@@ -16,19 +21,23 @@ export default function HomePage() {
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link 
-              href="/payment"
+              href="/quote"
               className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors duration-200"
             >
-              Start Transfer
+              Get Quote
             </Link>
-            <a 
-              href="https://github.com/kootie/swypt_hackathon"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="bg-gray-800 hover:bg-gray-900 text-white font-semibold py-3 px-8 rounded-lg transition-colors duration-200"
+            <Link 
+              href="/transfer"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors duration-200"
             >
-              View Source Code
-            </a>
+              Transfer
+            </Link>
+            <Link 
+              href="/transactions"
+              className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors duration-200"
+            >
+              Transactions
+            </Link>
           </div>
         </div>
 
